@@ -82,6 +82,50 @@ describe('Gist API contract', () => {
     })
   })
 
+  test('rejects filenames with path separators', async () => {
+    const app = createApp()
+    const env = createTestEnv()
+
+    const createResponse = await app.request(
+      '/gists',
+      {
+        method: 'POST',
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          files: {
+            'docs/file.txt': { content: 'not allowed' },
+          },
+        }),
+      },
+      env,
+    )
+
+    expect(createResponse.status).toBe(400)
+    expect(await createResponse.json()).toMatchObject({
+      message: 'Validation Failed: filename cannot contain /',
+    })
+
+    const gist = await createTestGist(env)
+    const updateResponse = await app.request(
+      `/gists/${gist.id}`,
+      {
+        method: 'PATCH',
+        headers: ownerHeaders(),
+        body: JSON.stringify({
+          files: {
+            'config.json': { filename: 'docs/config.json', content: '{"enabled":false}' },
+          },
+        }),
+      },
+      env,
+    )
+
+    expect(updateResponse.status).toBe(400)
+    expect(await updateResponse.json()).toMatchObject({
+      message: 'Validation Failed: filename cannot contain /',
+    })
+  })
+
   test('allows whitespace-only filenames and content', async () => {
     const app = createApp()
     const env = createTestEnv()
@@ -935,6 +979,65 @@ describe('Gist API contract', () => {
     expect(importResponse.status).toBe(400)
     expect(await importResponse.json()).toMatchObject({
       message: 'Imported file broken.txt has invalid size',
+    })
+
+    const ownerList = (await (await app.request(
+      '/users/owner/gists?per_page=100',
+      { headers: ownerHeaders() },
+      env,
+    )).json()) as Array<{ id: string }>
+    expect(ownerList.map((item) => item.id)).toEqual([String(existing.id)])
+  })
+
+  test('rejects imported filenames with path separators before replacing existing data', async () => {
+    const app = createApp()
+    const env = createTestEnv()
+    const existing = await createTestGist(env, {
+      files: { 'safe.txt': { content: 'keep' } },
+    })
+    const now = '2026-05-09T00:00:00.000Z'
+    const invalidImport = {
+      format: 'edgegist.export.v1',
+      exportedAt: now,
+      includeHistory: false,
+      gists: [
+        {
+          id: 'imported-gist',
+          ownerLogin: 'owner',
+          description: 'invalid filename',
+          visibility: 'secret',
+          starredAt: null,
+          createdAt: now,
+          updatedAt: now,
+          files: [
+            {
+              filename: 'docs/file.txt',
+              content: 'not allowed',
+              type: null,
+              language: null,
+              size: 11,
+              truncated: false,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        },
+      ],
+    }
+
+    const importResponse = await app.request(
+      '/owner/_edgegist/api/import?includeHistory=false',
+      {
+        method: 'POST',
+        headers: ownerHeaders(),
+        body: JSON.stringify(invalidImport),
+      },
+      env,
+    )
+
+    expect(importResponse.status).toBe(400)
+    expect(await importResponse.json()).toMatchObject({
+      message: 'Imported file docs/file.txt has invalid filename',
     })
 
     const ownerList = (await (await app.request(

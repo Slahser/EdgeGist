@@ -1,4 +1,5 @@
 import type { D1DatabaseLike } from '../env'
+import { filenameHasPathSeparator } from '../filenames'
 import { badRequest } from '../http/errors'
 import { D1GistRepository } from '../gists/repository'
 import type {
@@ -410,6 +411,7 @@ function validateFile(file: unknown): asserts file is EdgeGistExportFile {
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw badRequest('Invalid file export item')
   const item = file as EdgeGistExportFile
   if (!item.filename || typeof item.filename !== 'string') throw badRequest('Imported file is missing filename')
+  if (filenameHasPathSeparator(item.filename)) throw badRequest(`Imported file ${item.filename} has invalid filename`)
   if (typeof item.content !== 'string') throw badRequest(`Imported file ${item.filename} is missing content`)
   if (item.type !== null && typeof item.type !== 'string') throw badRequest(`Imported file ${item.filename} has invalid type`)
   if (item.language !== null && typeof item.language !== 'string') throw badRequest(`Imported file ${item.filename} has invalid language`)
@@ -423,13 +425,18 @@ function validateChange(change: unknown): asserts change is GistVersionFileChang
   if (!change || typeof change !== 'object' || Array.isArray(change)) throw badRequest('Invalid version change export item')
   const item = change as GistVersionFileChange
   if (!item.filename || typeof item.filename !== 'string') throw badRequest('Imported version change is missing filename')
+  if (filenameHasPathSeparator(item.filename)) throw badRequest(`Invalid filename for ${item.filename}`)
   if (item.status !== 'added' && item.status !== 'modified' && item.status !== 'deleted') {
     throw badRequest(`Invalid change status for ${item.filename}`)
   }
   if (
     item.previousFilename !== undefined &&
     item.previousFilename !== null &&
-    (typeof item.previousFilename !== 'string' || item.previousFilename.length === 0)
+    (
+      typeof item.previousFilename !== 'string' ||
+      item.previousFilename.length === 0 ||
+      filenameHasPathSeparator(item.previousFilename)
+    )
   ) {
     throw badRequest(`Invalid previous filename for ${item.filename}`)
   }

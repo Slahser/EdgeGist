@@ -13,6 +13,8 @@ export type GistFile = {
   raw_url: string
   size: number
   truncated: boolean
+  created_at: string
+  updated_at: string
   content?: string
 }
 

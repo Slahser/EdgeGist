@@ -74,7 +74,9 @@ export class D1GistRepository implements GistRepository {
       starredAt: null,
       createdAt: input.now,
       updatedAt: input.now,
-      files: input.files.map((file) => normalizeFile(file.filename, file.content, input.now, file)),
+      files: orderFilesByCreatedAt(
+        input.files.map((file) => normalizeFile(file.filename, file.content, input.now, file)),
+      ),
     }
 
     await this.db.batch([
@@ -345,7 +347,7 @@ export class D1GistRepository implements GistRepository {
         `SELECT filename, ${contentSelection}, type, language, size, truncated, created_at, updated_at
          FROM gist_files
          WHERE gist_id = ?
-         ORDER BY filename ASC`,
+         ORDER BY created_at DESC, filename ASC`,
       )
       .bind(row.id)
       .all<GistFileRow>()
@@ -530,25 +532,17 @@ function applyFileUpdates(
   now: string,
 ): GistFileRecord[] {
   const currentFileByName = new Map(currentFiles.map((file) => [file.filename, file]))
-  const removedFilenames = new Set<string>()
+  const deletedOriginalFilenames = new Set<string>()
+  const replacementsByOriginalFilename = new Map<string, GistFileRecord>()
+  const newFiles: GistFileRecord[] = []
 
   for (const update of updates ?? []) {
     const existing = currentFileByName.get(update.previousFilename)
-    if (update.delete || (existing && update.filename !== update.previousFilename)) {
-      removedFilenames.add(update.previousFilename)
+    if (update.delete) {
+      deletedOriginalFilenames.add(update.previousFilename)
+      continue
     }
-  }
 
-  const files = new Map(
-    currentFiles
-      .filter((file) => !removedFilenames.has(file.filename))
-      .map((file) => [file.filename, file]),
-  )
-
-  for (const update of updates ?? []) {
-    if (update.delete) continue
-
-    const existing = currentFileByName.get(update.previousFilename)
     if (!existing && update.content === undefined) continue
     const filename = update.filename
     const content = update.content ?? existing?.content ?? ''
@@ -557,14 +551,29 @@ function applyFileUpdates(
       language: update.language ?? existing?.language ?? undefined,
     })
 
-    files.set(filename, {
+    const file = {
       ...next,
       createdAt: existing?.createdAt ?? now,
-    })
+    }
+
+    if (existing) {
+      replacementsByOriginalFilename.set(update.previousFilename, file)
+    } else {
+      newFiles.push(file)
+    }
   }
 
-  return Array.from(files.values()).sort((left, right) =>
-    left.filename.localeCompare(right.filename),
+  const existingFiles = currentFiles.flatMap((file) => {
+    if (deletedOriginalFilenames.has(file.filename)) return []
+    return [replacementsByOriginalFilename.get(file.filename) ?? file]
+  })
+
+  return orderFilesByCreatedAt([...newFiles, ...existingFiles])
+}
+
+function orderFilesByCreatedAt(files: GistFileRecord[]): GistFileRecord[] {
+  return [...files].sort((left, right) =>
+    right.createdAt.localeCompare(left.createdAt) || left.filename.localeCompare(right.filename),
   )
 }
 

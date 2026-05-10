@@ -158,6 +158,8 @@ export function presentFile(
     raw_url: rawUrl,
     size: file.size,
     truncated: file.truncated,
+    created_at: file.createdAt,
+    updated_at: file.updatedAt,
     ...(includeContent ? { content: file.content } : {}),
   }
 }

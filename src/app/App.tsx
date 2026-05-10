@@ -1,5 +1,5 @@
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent, ReactNode } from 'react'
+import type { CSSProperties, DragEvent as ReactDragEvent, FormEvent, ReactNode } from 'react'
 import type { FileContents as PierreDiffFileContents } from '@pierre/diffs/react'
 import { createFileTreeIconResolver, getBuiltInFileIconColor, getBuiltInSpriteSheet } from '@pierre/trees'
 import {
@@ -57,8 +57,18 @@ import {
 } from 'lucide-react'
 import { createHighlighterCore } from 'shiki/core'
 import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
+import { filenameHasPathSeparator } from '../filenames'
 import { ApiClient, type GistListResult, type SaveGistInput } from './api'
 import { isSelectedGistDetailLoading, shouldHideAdminBootShell } from './detail-loading'
+import {
+  activeDraftFilenames,
+  duplicateFilename,
+  prependUploadedTextFiles,
+  readUploadedTextFiles,
+  uploadedTextFilesToUpdateFiles,
+  type UploadedTextFile,
+} from './file-upload'
+import { gistFilePathsByCreatedAt, gistFilesByCreatedAt } from './file-order'
 import { FileTreePanel } from './FileTreePanel'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
@@ -367,6 +377,8 @@ const englishTranslations = {
   fileContent: 'File content',
   fileContentRequired: 'File content is required.',
   fileDeleted: 'File deleted.',
+  fileNameCannotContainSlash: 'File name cannot contain /.',
+  filesUploaded: 'Files uploaded.',
   fileHistory: 'File history',
   fileHistoryDescription: 'Changes for the selected file',
   fileName: 'File name',
@@ -492,7 +504,9 @@ const englishTranslations = {
   usageWindow: 'Usage window',
   updatedAt: 'Updated at',
   updatedLabel: 'Updated',
+  uploadFiles: 'Upload files',
   uploadFileContent: 'Upload file content',
+  uploadingFiles: 'Uploading files',
   username: 'Username',
   versionsCount: '{count} versions',
   writeQueries: 'Write queries',
@@ -606,6 +620,8 @@ const translations: Record<Locale, Record<TranslationKey, string>> = {
     fileContent: '文件内容',
     fileContentRequired: '文件内容不能为空。',
     fileDeleted: '文件已删除。',
+    fileNameCannotContainSlash: '文件名不能包含 /。',
+    filesUploaded: '文件已上传。',
     fileHistory: '文件历史',
     fileHistoryDescription: '当前选中文件的历史变更',
     fileName: '文件名',
@@ -731,7 +747,9 @@ const translations: Record<Locale, Record<TranslationKey, string>> = {
     usageWindow: '用量窗口',
     updatedAt: '更新日期时间',
     updatedLabel: '更新于',
+    uploadFiles: '上传文件',
     uploadFileContent: '上传文件内容',
+    uploadingFiles: '正在上传文件',
     username: '用户名',
     versionsCount: '{count} 个版本',
     writeQueries: 'Write queries',
@@ -1277,7 +1295,7 @@ export function App() {
 
   const applyInitialGistDetail = useCallback(
     (nextDetail: GistDetail, options: { versionSha?: string | null } = {}) => {
-      const filenames = Object.keys(nextDetail.files)
+      const filenames = gistFilePathsByCreatedAt(nextDetail.files)
       const versionSha = options.versionSha ?? null
       cacheGistSearchDetail(nextDetail)
       setDetail(nextDetail)
@@ -1373,7 +1391,7 @@ export function App() {
       applyGistListResult(nextGists)
 
       if (nextDetail) {
-        const filenames = Object.keys(nextDetail.files)
+        const filenames = gistFilePathsByCreatedAt(nextDetail.files)
         cacheGistSearchDetail(nextDetail)
         setDetail(nextDetail)
         setSelectedFile((current) => (current && nextDetail.files[current] ? current : filenames[0] ?? null))
@@ -1812,7 +1830,7 @@ export function App() {
 
         cacheGistSearchDetail(updated)
         setDetail(updated)
-        const filenames = Object.keys(updated.files)
+        const filenames = gistFilePathsByCreatedAt(updated.files)
         setSelectedFile((current) => (current && updated.files[current] ? current : filenames[0] ?? null))
         await loadDashboard()
         setToastMessage(t('gistSaved'))
@@ -1931,6 +1949,10 @@ export function App() {
       setError(t('gistFilesRequired'))
       return
     }
+    if (filenameHasPathSeparator(filename)) {
+      setError(t('fileNameCannotContainSlash'))
+      return
+    }
     if (fileEditorDraft.content.length === 0) {
       setError(t('fileContentRequired'))
       return
@@ -1986,6 +2008,51 @@ export function App() {
     }
   }
 
+  async function saveUploadedFiles(uploadedFiles: UploadedTextFile[]) {
+    if (!isAuthenticated || !detail || uploadedFiles.length === 0 || fileSaving) return
+
+    setFileSaving(true)
+    setError(null)
+    try {
+      const updated = await client.updateGist(detail.id, {
+        description: detail.description,
+        visibility: detail.visibility,
+        public: detail.visibility === 'public',
+        files: uploadedTextFilesToUpdateFiles(uploadedFiles),
+      })
+
+      setFileEditorMode(null)
+      if (!updated) {
+        setDetail(null)
+        navigateAdmin('gists', null, 'replace')
+        await loadDashboard()
+        setToastMessage(t('filesUploaded'))
+        return
+      }
+
+      const firstUploadedFilename = uploadedFiles.at(-1)?.filename ?? uploadedFiles[0]?.filename
+      cacheGistSearchDetail(updated)
+      setDetail(updated)
+      setSelectedFile((current) =>
+        firstUploadedFilename && updated.files[firstUploadedFilename]
+          ? firstUploadedFilename
+          : current && updated.files[current]
+            ? current
+            : gistFilePathsByCreatedAt(updated.files)[0] ?? null,
+      )
+      setSelectedVersionSha(null)
+      setSelectedVersion(null)
+      setBaseVersion(null)
+      setMode('content')
+      await loadDashboard()
+      setToastMessage(t('filesUploaded'))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to upload files')
+    } finally {
+      setFileSaving(false)
+    }
+  }
+
   function requestDeleteSelectedFile() {
     if (!isAuthenticated || !latestFile) return
     setConfirmDialog({
@@ -2023,7 +2090,7 @@ export function App() {
 
       cacheGistSearchDetail(updated)
       setDetail(updated)
-      const filenames = Object.keys(updated.files)
+      const filenames = gistFilePathsByCreatedAt(updated.files)
       setSelectedFile(filenames[0] ?? null)
       setSelectedVersionSha(null)
       setSelectedVersion(null)
@@ -2180,7 +2247,7 @@ export function App() {
         ? baseVersion.files[selectedFile] ?? null
         : null
   const activeFile = mode === 'diff' ? diffNewFile ?? diffOldFile ?? latestFile : latestFile
-  const fileTreePaths = detail ? Object.keys(detail.files) : []
+  const fileTreePaths = detail ? gistFilePathsByCreatedAt(detail.files) : []
   const retentionLimit = status?.retention.count ?? 100
   const selectedFileHistory = detail && selectedFile ? historyForFile(detail.history, selectedFile, retentionLimit) : []
   const fileSetChanges = detail ? fileSetHistory(detail.history, retentionLimit) : []
@@ -2363,6 +2430,7 @@ export function App() {
                 ) : null
               }
               fileEditorTitle={fileEditorMode === 'create' ? t('newFile') : fileEditorMode === 'edit' ? t('editFile') : null}
+              fileSaving={fileSaving}
               latestFile={latestFile}
               mode={mode}
               selectedFile={selectedFile}
@@ -2386,6 +2454,8 @@ export function App() {
               onGistSubmit={saveGist}
               onEdit={openEditGistEditor}
               onEditFile={openEditFileEditor}
+              onUploadError={setError}
+              onUploadFiles={saveUploadedFiles}
               onDiffLayoutPreference={setDiffLayoutPreference}
               onDiffIndicatorStyle={setDiffIndicatorStyle}
               onDiffInlineMode={setDiffInlineMode}
@@ -3010,6 +3080,7 @@ function GistDetailPage({
   gistSaving,
   fileEditor,
   fileEditorTitle,
+  fileSaving,
   latestFile,
   mode,
   selectedFile,
@@ -3029,6 +3100,8 @@ function GistDetailPage({
   onGistSubmit,
   onEdit,
   onEditFile,
+  onUploadError,
+  onUploadFiles,
   onDiffLayoutPreference,
   onDiffIndicatorStyle,
   onDiffInlineMode,
@@ -3059,6 +3132,7 @@ function GistDetailPage({
   gistSaving: boolean
   fileEditor: ReactNode
   fileEditorTitle: string | null
+  fileSaving: boolean
   latestFile: (GistFile & { content: string }) | null
   mode: ViewMode
   selectedFile: string | null
@@ -3078,6 +3152,8 @@ function GistDetailPage({
   onGistSubmit(event: FormEvent<HTMLFormElement>): void
   onEdit(): void
   onEditFile(): void
+  onUploadError(message: string): void
+  onUploadFiles(files: UploadedTextFile[]): void | Promise<void>
   onDiffLayoutPreference(value: DiffLayoutPreference): void
   onDiffIndicatorStyle(value: DiffIndicatorStyle): void
   onDiffInlineMode(value: DiffInlineMode): void
@@ -3207,32 +3283,54 @@ function GistDetailPage({
               onAdd={canManage ? onAddFile : undefined}
               onExpand={() => setFilesPanelCollapsed(false)}
               onSelect={onSelectFile}
-            />
-          ) : (
-            <FileTreePanel
-              key={fileTreeKey}
-              addLabel={t('addFile')}
-              headerAction={
-                canCollapseSidePanels ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setFilesPanelCollapsed(true)}
-                    title={t('collapseSidebar')}
-                    aria-label={t('collapseSidebar')}
-                  >
-                    <ChevronLeft className="h-4 w-4" />
-                  </Button>
+              uploadControl={
+                canManage ? (
+                  <TextFileUploadIconButton
+                    disabled={fileSaving}
+                    existingFilenames={fileTreePaths}
+                    label={t('uploadFiles')}
+                    onError={onUploadError}
+                    onUploaded={onUploadFiles}
+                  />
                 ) : null
               }
-              paths={fileTreePaths}
-              searchPlaceholder={t('fileTreeSearchPlaceholder')}
-              selectedPath={selectedFile}
-              title={t('files')}
-              onAdd={canManage ? onAddFile : undefined}
-              onSelect={onSelectFile}
             />
+          ) : (
+            <div className="grid gap-3">
+              {canManage ? (
+                <TextFileUploadDropzone
+                  disabled={fileSaving}
+                  existingFilenames={fileTreePaths}
+                  label={t('uploadFiles')}
+                  onError={onUploadError}
+                  onUploaded={onUploadFiles}
+                />
+              ) : null}
+              <FileTreePanel
+                key={fileTreeKey}
+                addLabel={t('addFile')}
+                headerAction={
+                  canCollapseSidePanels ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => setFilesPanelCollapsed(true)}
+                      title={t('collapseSidebar')}
+                      aria-label={t('collapseSidebar')}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </Button>
+                  ) : null
+                }
+                paths={fileTreePaths}
+                searchPlaceholder={t('fileTreeSearchPlaceholder')}
+                selectedPath={selectedFile}
+                title={t('files')}
+                onAdd={canManage ? onAddFile : undefined}
+                onSelect={onSelectFile}
+              />
+            </div>
           )}
         </div>
         {contentFullscreen ? (
@@ -4004,12 +4102,24 @@ function GistEditor({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => onChange({ ...draft, files: [...draft.files, emptyFileDraft()] })}
+                  onClick={() => onChange({ ...draft, files: [emptyFileDraft(), ...draft.files] })}
                 >
                   <Plus className="h-3.5 w-3.5" />
                   {t('addFile')}
                 </Button>
               </div>
+
+              <TextFileUploadDropzone
+                existingFilenames={activeDraftFilenames(draft.files)}
+                label={t('uploadFiles')}
+                onError={onUploadError}
+                onUploaded={(uploadedFiles) =>
+                  onChange({
+                    ...draft,
+                    files: prependUploadedTextFiles(draft.files, uploadedFiles, fileDraftFromUpload),
+                  })
+                }
+              />
 
               {fullscreenFileId ? (
                 <button
@@ -4184,6 +4294,182 @@ function FileEditor({
   )
 }
 
+function TextFileUploadDropzone({
+  disabled = false,
+  existingFilenames,
+  label,
+  onError,
+  onUploaded,
+}: {
+  disabled?: boolean
+  existingFilenames: string[]
+  label: string
+  onError(message: string): void
+  onUploaded(files: UploadedTextFile[]): void | Promise<void>
+}) {
+  const t = useT()
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const dragDepthRef = useRef(0)
+  const [dragActive, setDragActive] = useState(false)
+  const [uploading, setUploading] = useState(false)
+
+  async function uploadFiles(files: FileList | File[] | null) {
+    if (disabled || uploading) return
+    const selectedFiles = Array.from(files ?? [])
+    if (selectedFiles.length === 0) return
+
+    setUploading(true)
+    try {
+      const uploadedFiles = await readUploadedTextFiles(selectedFiles, existingFilenames)
+      if (uploadedFiles.length > 0) await onUploaded(uploadedFiles)
+    } catch {
+      onError(t('fileUploadFailed'))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  function handleDragEnter(event: ReactDragEvent<HTMLDivElement>) {
+    if (disabled) return
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current += 1
+    setDragActive(true)
+  }
+
+  function handleDragOver(event: ReactDragEvent<HTMLDivElement>) {
+    if (disabled) return
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.dataTransfer.dropEffect = 'copy'
+    setDragActive(true)
+  }
+
+  function handleDragLeave(event: ReactDragEvent<HTMLDivElement>) {
+    if (disabled) return
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragActive(false)
+  }
+
+  function handleDrop(event: ReactDragEvent<HTMLDivElement>) {
+    if (disabled) return
+    if (!isFileDrag(event)) return
+    event.preventDefault()
+    event.stopPropagation()
+    dragDepthRef.current = 0
+    setDragActive(false)
+    void uploadFiles(event.dataTransfer.files)
+  }
+
+  return (
+    <div
+      className={cn(
+        'file-upload-dropzone',
+        dragActive && 'file-upload-dropzone-active',
+        uploading && 'file-upload-dropzone-busy',
+      )}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      <input
+        ref={inputRef}
+        className="sr-only"
+        type="file"
+        multiple
+        disabled={disabled || uploading}
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? [])
+          event.currentTarget.value = ''
+          void uploadFiles(files)
+        }}
+      />
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => inputRef.current?.click()}
+        disabled={disabled || uploading}
+      >
+        {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+        {label}
+      </Button>
+      {uploading ? (
+        <span className="min-w-0 truncate text-sm text-muted-foreground">
+          {t('uploadingFiles')}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
+function TextFileUploadIconButton({
+  disabled = false,
+  existingFilenames,
+  label,
+  onError,
+  onUploaded,
+}: {
+  disabled?: boolean
+  existingFilenames: string[]
+  label: string
+  onError(message: string): void
+  onUploaded(files: UploadedTextFile[]): void | Promise<void>
+}) {
+  const t = useT()
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const [uploading, setUploading] = useState(false)
+
+  async function uploadFiles(files: FileList | File[] | null) {
+    if (disabled || uploading) return
+    const selectedFiles = Array.from(files ?? [])
+    if (selectedFiles.length === 0) return
+
+    setUploading(true)
+    try {
+      const uploadedFiles = await readUploadedTextFiles(selectedFiles, existingFilenames)
+      if (uploadedFiles.length > 0) await onUploaded(uploadedFiles)
+    } catch {
+      onError(t('fileUploadFailed'))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <>
+      <input
+        ref={inputRef}
+        className="sr-only"
+        type="file"
+        multiple
+        disabled={disabled || uploading}
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? [])
+          event.currentTarget.value = ''
+          void uploadFiles(files)
+        }}
+      />
+      <button
+        type="button"
+        className="compact-detail-panel-item"
+        onClick={() => inputRef.current?.click()}
+        title={label}
+        aria-label={label}
+        disabled={disabled || uploading}
+      >
+        {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+      </button>
+    </>
+  )
+}
+
 function TextFileUploadButton({
   label,
   onError,
@@ -4220,6 +4506,10 @@ function TextFileUploadButton({
       </Button>
     </>
   )
+}
+
+function isFileDrag(event: ReactDragEvent<HTMLElement>) {
+  return Array.from(event.dataTransfer.types).includes('Files')
 }
 
 function EditorLoadingPlaceholder({
@@ -5227,7 +5517,9 @@ function codeTheme(colorMode: ResolvedColorMode) {
   return colorMode === 'dark' ? 'github-dark-default' : 'github-light-default'
 }
 
-type CodeFile = GistFile & { content: string }
+type CodeFile = Pick<GistFile, 'filename' | 'language' | 'raw_url' | 'size' | 'truncated' | 'type'> & {
+  content: string
+}
 
 const codeHighlightCache = new Map<string, Promise<string[]>>()
 const codeHighlightResultCache = new Map<string, string[]>()
@@ -5658,6 +5950,7 @@ function CompactFilePanel({
   onAdd,
   onExpand,
   onSelect,
+  uploadControl,
 }: {
   addLabel: string
   paths: string[]
@@ -5666,9 +5959,8 @@ function CompactFilePanel({
   onAdd?: () => void
   onExpand(): void
   onSelect(path: string): void
+  uploadControl?: ReactNode
 }) {
-  const sortedPaths = useMemo(() => [...paths].sort((left, right) => left.localeCompare(right)), [paths])
-
   return (
     <div className="compact-detail-panel" aria-label={title}>
       <span
@@ -5687,7 +5979,7 @@ function CompactFilePanel({
         <Files className="h-4 w-4" />
       </button>
       <div className="compact-detail-panel-list">
-        {sortedPaths.map((path) => (
+        {paths.map((path) => (
           <button
             key={path}
             type="button"
@@ -5714,6 +6006,7 @@ function CompactFilePanel({
             <Plus className="h-4 w-4" />
           </button>
         ) : null}
+        {uploadControl}
       </div>
     </div>
   )
@@ -5844,7 +6137,7 @@ function emptyGistDraft(): GistEditorDraft {
     secret: true,
     visibility: 'secret',
     starred: false,
-    files: [emptyFileDraft()],
+    files: [],
   }
 }
 
@@ -5856,6 +6149,18 @@ function emptyFileDraft(filename = ''): GistFileDraft {
     filename,
     language: null,
     content: '',
+    deleted: false,
+  }
+}
+
+function fileDraftFromUpload(file: UploadedTextFile): GistFileDraft {
+  return {
+    id: createDraftId(),
+    originalFilename: null,
+    originalContent: null,
+    filename: file.filename,
+    language: null,
+    content: file.content,
     deleted: false,
   }
 }
@@ -5875,7 +6180,7 @@ function gistDraftFromDetail(gist: GistDetail): GistEditorDraft {
     secret: gist.visibility !== 'public',
     visibility: gist.visibility,
     starred: gist.starred,
-    files: Object.values(gist.files).map((file) => ({
+    files: gistFilesByCreatedAt(gist.files).map((file) => ({
       id: createDraftId(),
       originalFilename: file.filename,
       originalContent: file.content,
@@ -5895,6 +6200,7 @@ function validateGistDraft(draft: GistEditorDraft, mode: GistEditorMode): Transl
   const activeFiles = draft.files.filter((file) => !file.deleted)
   if (mode === 'create' && activeFiles.length === 0) return 'gistFilesRequired'
   if (activeFiles.some((file) => file.filename.length === 0)) return 'gistFilesRequired'
+  if (activeFiles.some((file) => filenameHasPathSeparator(file.filename))) return 'fileNameCannotContainSlash'
   if (activeFiles.some((file) => file.content.length === 0)) return 'fileContentRequired'
 
   const names = activeFiles.map((file) => file.filename)
@@ -5944,7 +6250,7 @@ function gistDetailToCreateInput(gist: GistDetail): SaveGistInput {
     visibility: gist.visibility,
     public: gist.visibility === 'public',
     files: Object.fromEntries(
-      Object.values(gist.files).map((file) => [
+      gistFilesByCreatedAt(gist.files).map((file) => [
         file.filename,
         {
           content: file.content,
@@ -5952,25 +6258,6 @@ function gistDetailToCreateInput(gist: GistDetail): SaveGistInput {
       ]),
     ),
   }
-}
-
-function duplicateFilename(filename: string, existingNames: string[]) {
-  const existing = new Set(existingNames)
-  const lastSlash = filename.lastIndexOf('/')
-  const directory = lastSlash >= 0 ? `${filename.slice(0, lastSlash + 1)}` : ''
-  const basename = lastSlash >= 0 ? filename.slice(lastSlash + 1) : filename
-  const lastDot = basename.lastIndexOf('.')
-  const hasExtension = lastDot > 0
-  const stem = hasExtension ? basename.slice(0, lastDot) : basename
-  const extension = hasExtension ? basename.slice(lastDot) : ''
-
-  for (let index = 1; index < 1000; index += 1) {
-    const suffix = index === 1 ? ' copy' : ` copy ${index}`
-    const candidate = `${directory}${stem}${suffix}${extension}`
-    if (!existing.has(candidate)) return candidate
-  }
-
-  return `${directory}${stem} copy ${Date.now()}${extension}`
 }
 
 function EmptyState() {
@@ -6258,7 +6545,7 @@ function formatBytes(size: number) {
 }
 
 function gistDisplayTitle(gist: GistSummary) {
-  return gist.description || Object.keys(gist.files)[0] || gist.id
+  return gist.description || gistFilePathsByCreatedAt(gist.files)[0] || gist.id
 }
 
 function gistVisibilityLabel(visibility: GistSummary['visibility'], t: Translator) {
@@ -6297,7 +6584,7 @@ function findGistSearchMatch(
   searchIndex: GistSearchIndex | undefined,
   query: string,
 ): GistSearchMatch {
-  const filenames = Object.keys(gist.files).filter((filename) => textIncludesSearch(filename, query))
+  const filenames = gistFilePathsByCreatedAt(gist.files).filter((filename) => textIncludesSearch(filename, query))
   const content = Object.entries(searchIndex?.files ?? {})
     .flatMap(([filename, file]) => {
       const match = searchContentMatch(filename, file, query)

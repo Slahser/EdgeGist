@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { preparePresortedFileTreeInput } from '@pierre/trees'
 import { FileTree, useFileTree } from '@pierre/trees/react'
 import { Plus } from 'lucide-react'
 import { Button } from './components/ui/button'
@@ -26,17 +27,22 @@ export function FileTreePanel({
   onSelect,
 }: FileTreePanelProps) {
   const treeHostRef = useRef<HTMLDivElement | null>(null)
+  const hasDirectoryPaths = paths.some((path) => path.includes('/'))
   const sortedPaths = useMemo(() => [...paths].sort((left, right) => left.localeCompare(right)), [paths])
-  const initialSelectedPaths = selectedPath ? [selectedPath] : sortedPaths.slice(0, 1)
+  const preparedInput = useMemo(
+    () => (hasDirectoryPaths ? null : preparePresortedFileTreeInput(paths)),
+    [hasDirectoryPaths, paths],
+  )
+  const initialSelectedPaths = selectedPath ? [selectedPath] : paths.slice(0, 1)
   const { model } = useFileTree({
     flattenEmptyDirectories: true,
     initialExpansion: 'open',
     initialSelectedPaths,
     onSelectionChange: (selectedPaths) => {
-      const next = selectedPaths.find((path) => sortedPaths.includes(path))
+      const next = selectedPaths.find((path) => paths.includes(path))
       if (next) onSelect(next)
     },
-    paths: sortedPaths,
+    ...(preparedInput ? { preparedInput } : { paths: sortedPaths }),
     search: true,
     unsafeCSS: `
       :host {
@@ -108,7 +114,7 @@ export function FileTreePanel({
       timeoutIds.forEach((timeoutId) => window.clearTimeout(timeoutId))
       frameIds.forEach((frameId) => window.cancelAnimationFrame(frameId))
     }
-  }, [searchPlaceholder, sortedPaths])
+  }, [searchPlaceholder, paths])
 
   return (
     <Card className="file-tree-panel min-h-0 self-start overflow-hidden">
@@ -124,7 +130,11 @@ export function FileTreePanel({
         </div>
       </CardHeader>
       <CardContent ref={treeHostRef} className="p-0">
-        <FileTree key={sortedPaths.join('\n')} model={model} style={{ height: 'var(--edgegist-file-tree-height)' }} />
+        <FileTree
+          key={(preparedInput ? paths : sortedPaths).join('\n')}
+          model={model}
+          style={{ height: 'var(--edgegist-file-tree-height)' }}
+        />
       </CardContent>
     </Card>
   )

@@ -20,6 +20,56 @@ describe('D1 repository runtime behavior', () => {
     expect(found?.files[0]?.content).toBe('{"ok":true}')
   })
 
+  test('orders current gist files by created date descending', async () => {
+    const repository = new D1GistRepository(createMigratedTestD1())
+    const gist = await repository.createGist({
+      ownerLogin: 'owner',
+      description: 'runtime',
+      visibility: 'secret',
+      files: [
+        { filename: 'z.txt', content: 'z' },
+        { filename: 'a.txt', content: 'a' },
+        { filename: 'm.txt', content: 'm' },
+      ],
+      now: '2026-05-08T00:00:00.000Z',
+    })
+
+    expect(gist.files.map((file) => file.filename)).toEqual([
+      'a.txt',
+      'm.txt',
+      'z.txt',
+    ])
+    expect((await repository.getGist(gist.id))?.files.map((file) => file.filename)).toEqual([
+      'a.txt',
+      'm.txt',
+      'z.txt',
+    ])
+
+    const updated = await repository.updateGist(gist.id, {
+      files: [
+        { previousFilename: 'alpha.txt', filename: 'alpha.txt', content: 'alpha' },
+        { previousFilename: 'beta.txt', filename: 'beta.txt', content: 'beta' },
+        { previousFilename: 'a.txt', filename: 'renamed.txt', content: 'renamed' },
+      ],
+      now: '2026-05-08T01:00:00.000Z',
+    })
+
+    expect(updated?.files.map((file) => file.filename)).toEqual([
+      'alpha.txt',
+      'beta.txt',
+      'm.txt',
+      'renamed.txt',
+      'z.txt',
+    ])
+    expect((await repository.getGist(gist.id))?.files.map((file) => file.filename)).toEqual([
+      'alpha.txt',
+      'beta.txt',
+      'm.txt',
+      'renamed.txt',
+      'z.txt',
+    ])
+  })
+
   test('deletes versions outside the kept set', async () => {
     const repository = new D1GistRepository(createMigratedTestD1())
     const gist = await repository.createGist({

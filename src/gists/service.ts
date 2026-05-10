@@ -1,4 +1,5 @@
 import type { EdgeGistConfig } from '../env'
+import { filenameHasPathSeparator, filenamePathSeparatorMessage } from '../filenames'
 import { badRequest, notFound } from '../http/errors'
 import { changeStatusForFileChanges, fileChangesForFiles, type FileRenameHint } from './file-changes'
 import { applyRetention } from './retention'
@@ -87,6 +88,9 @@ function parseCreateFiles(files: unknown): Array<{ filename: string; content: st
   if (parsed.some((file) => isBlankFilename(file.filename))) {
     throw badRequest('Validation Failed: filename is required')
   }
+  if (parsed.some((file) => filenameHasPathSeparator(file.filename))) {
+    throw badRequest(filenamePathSeparatorMessage())
+  }
   if (parsed.some((file) => isBlankContent(file.content))) {
     throw badRequest('Validation Failed: file content is required')
   }
@@ -139,6 +143,9 @@ function validateUpdateFilePlan(currentFiles: GistFileRecord[], updates: ParsedF
   for (const update of updates) {
     if (isBlankFilename(update.previousFilename) || isBlankFilename(update.filename)) {
       throw badRequest('Validation Failed: filename is required')
+    }
+    if (!update.delete && filenameHasPathSeparator(update.filename)) {
+      throw badRequest(filenamePathSeparatorMessage())
     }
 
     if (update.delete) {
