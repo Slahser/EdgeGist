@@ -15,6 +15,10 @@ Works perfectly with the [Sub-Store](https://github.com/sub-store-org/Sub-Store)
 
 EdgeGist is API-first: deploy it, configure your owner token, and point Gist API clients at your own base URL instead of `https://api.github.com`. It also ships a single-owner Web UI at `/<owner>` for browsing, editing, import/export, and Cloudflare usage checks. The root path `/` intentionally returns `404` instead of redirecting, so the configured owner route is not exposed.
 
+## Documentation
+
+- [EdgeGist Automated Sync and Secure Deployment Guide (GitHub Actions)](AUTO_DEPLOY_GUIDE.md) (written in Chinese) - thanks to [lockcp](https://github.com/lockcp) for providing this document.
+
 ## Community
 
 Join the community for discussion and updates.
