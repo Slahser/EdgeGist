@@ -274,6 +274,7 @@ Some operations are intentionally manual or account-specific:
 | Apply migrations manually | Cloudflare dashboard -> D1 -> database -> Console. |
 | Attach custom domain | Cloudflare dashboard -> Workers & Pages -> Worker -> Settings -> Domains & Routes. |
 | Configure Usage page fields | Edge Gist app -> Settings -> Cloudflare Usage. |
+
 ## Usage And Quota
 
 The Cloudflare Usage page is configured from the app UI and stored in D1. These fields are not deployment variables in `wrangler.jsonc`.
@@ -303,6 +304,69 @@ The Cloudflare Usage page is configured from the app UI and stored in D1. These 
 Usage windows are displayed with the browser's `toLocaleString()` formatting. The Usage page caches the last successful response in D1 so the dashboard can still show recent data if Cloudflare's API is temporarily unavailable.
 
 Cloudflare analytics can lag behind real time. Small differences from the Cloudflare dashboard are expected when the dashboard and the app use slightly different aggregation windows or when Cloudflare has not finished processing the latest data.
+
+### Cloudflare Workers limits that affect EdgeGist
+
+Limits below were checked against Cloudflare's official docs on 2026-05-11. Cloudflare can change these values; use the linked docs as the source of truth: [Workers limits](https://developers.cloudflare.com/workers/platform/limits/), [Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/), [Workers Static Assets billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), and [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/).
+
+| Workers limit | Free | Paid / Standard | EdgeGist consequence |
+| --- | --- | --- | --- |
+| Worker requests | 100,000/day | No fixed hard limit; Standard includes 10 million/month, then overage billing applies | Dynamic routes such as API calls, `/<owner>`, gist detail pages, login, imports, exports, and usage refreshes count as Worker requests. When the Free daily limit is exhausted, dynamic routes can fail. Static asset requests are free and unlimited when they do not invoke the Worker; this project routes `/static/*`, `/icons/*`, and `/screenshots/*` directly to Assets. |
+| CPU time per HTTP request | 10 ms | 30 seconds by default, configurable up to 5 minutes | Free-plan deployments should stay personal and light. Large searches, imports, exports, syntax payload preparation, or huge history reads may need Workers Paid even when D1 storage is still available. |
+| Memory per isolate | 128 MB | 128 MB | Very large request/response bodies, full export/import payloads, or many large files in one view can exhaust runtime memory before D1 storage is full. |
+| Subrequests per invocation | 50 | 10,000 | D1 operations and external Cloudflare API calls consume the same per-request budget. EdgeGist chunks D1 writes around the 100-parameter limit, but one API call still cannot perform unlimited D1 work. |
+| Simultaneous outgoing connections per invocation | 6 | 6 | The Cloudflare Usage page makes only a small number of parallel Cloudflare API calls. Avoid adding fan-out behavior that waits on more than six new outbound connections at once. |
+| URL size | 16 KB | 16 KB | Raw URLs include owner, gist id, optional revision sha, and filename. Extremely long filenames or query strings can be rejected before reaching EdgeGist. |
+| Request headers / response headers | 128 KB total / 128 KB total | 128 KB total / 128 KB total | Owner tokens and cookies must stay small. Do not add large metadata to headers. |
+| Request body size | Cloudflare account Free/Pro: 100 MB; Business: 200 MB; Enterprise: 500 MB by default | Same Cloudflare account-plan limits | This is the outer upload/import ceiling. EdgeGist's per-file D1 limit is much smaller, so a request can be under Cloudflare's body limit and still fail validation. |
+| Response body size | No Worker-enforced limit; CDN cache object limits still apply: 512 MB on Free/Pro/Business accounts and 5 GB on Enterprise | Same Cloudflare account-plan limits | Large exports can stream back through Workers, but practical CPU, memory, client connection, and D1 query limits still apply. |
+| Incoming HTTP wall time | No hard limit while the client remains connected; `waitUntil()` can extend work up to 30 seconds after disconnect | Same | Long imports/exports/searches depend on the client connection staying open. EdgeGist does not have a background queue, so do not rely on a request continuing indefinitely after the client disconnects. |
+| Environment variables | 64 variables/Worker, 5 KB each | 128 variables/Worker, 5 KB each | Keep `vars` limited to owner auth, base URL, retention, and optional Turnstile. Do not store large configuration blobs or token lists in Worker variables. |
+| Worker bundle size | 3 MB gzip, 64 MB uncompressed | 10 MB gzip, 64 MB uncompressed | The generated `dist/_worker.js` must stay small enough for the target plan. Large libraries should remain in static assets or be avoided. |
+| Startup time | 1 second | 1 second | Avoid expensive global-scope initialization; deployment can fail if the Worker cannot parse and initialize quickly. |
+| Workers per account | 100 | 500 | EdgeGist normally uses one Worker. This only matters when the same Cloudflare account hosts many Workers. |
+| Cron Triggers per account | 5 | 250 | EdgeGist does not require Cron Triggers. Future background jobs would consume this account-level quota. |
+| Routes and custom domains | 1,000 routes/zone, 100 custom domains/zone, 1,000 routed zones/Worker | Same | A normal EdgeGist deployment uses one custom domain or one route. Very large multi-domain setups should use wildcard routes or a different architecture. |
+| Cache API | 512 MB max object, 50 calls/request | 512 MB max object, 1,000 calls/request | EdgeGist does not require Cache API for correctness. Do not rely on Cache API as primary gist storage. |
+| Logs | 256 KB log data/request | 256 KB log data/request | Do not log gist file contents, import/export payloads, owner tokens, or Cloudflare API responses. Logs can be truncated and may expose secrets. |
+| Static Assets | 20,000 files/Worker version, 25 MiB/file, 100 `_headers` rules, 2,000 characters per `_headers` line, 2,000 static `_redirects`, 100 dynamic `_redirects`, 2,100 redirects total, 1,000 characters per redirect rule | 100,000 files/Worker version, same per-file/header/redirect limits | The built `dist/` assets and release package must stay below these limits. A single generated client asset over 25 MiB cannot be uploaded as a Worker asset. EdgeGist does not currently depend on `_redirects`. |
+| Legacy Bundled / Unbound usage models | Deprecated for new accounts | Deprecated for new accounts | If an old account still uses Bundled, expect Paid-like limits except Bundled keeps 50 subrequests/request, 50 ms HTTP CPU, 50 ms Cron CPU, and 50 Cache API calls/request. Move to Standard when possible. |
+
+### Cloudflare D1 limits that affect EdgeGist
+
+| D1 limit | Free | Paid | EdgeGist consequence |
+| --- | --- | --- | --- |
+| Databases per account | 10 | 50,000 | EdgeGist needs one D1 database. Extra staging or per-tenant databases count against the same account quota. |
+| Maximum database size | 500 MB | 10 GB | EdgeGist stores current files, retained revision snapshots, settings, and usage cache in D1. Large files and high `EDGEGIST_HISTORY_MAX_VERSIONS` values consume this quickly. The paid 10 GB per-database hard limit cannot be increased. |
+| Maximum storage per account | 5 GB | 1 TB | Multiple D1 databases share this account-level cap. On Paid, D1 billing includes the first 5 GB and then charges for additional stored GB-months. |
+| Rows read / rows written included usage | 5 million rows read/day; 100,000 rows written/day | First 25 billion rows read/month and 50 million rows written/month included, then overage billing | Listing, searching, importing, exporting, editing, retention cleanup, and usage-cache writes all consume D1 rows. D1 counts rows scanned, not just rows returned, so content search can consume many reads when the database grows. |
+| Time Travel duration | 7 days | 30 days | D1 Time Travel is a database backup window, not the same as EdgeGist retained revisions. EdgeGist history is controlled by `EDGEGIST_HISTORY_MAX_VERSIONS`. |
+| Time Travel restore rate | 10 restores / 10 minutes / database | Same | Disaster recovery via D1 restore is rate-limited. |
+| Queries per Worker invocation | 50 | 1,000 | One API request cannot issue unlimited D1 queries. Large import/export/history operations should be kept bounded and may require Workers Paid. |
+| Columns per table | 100 | 100 | Current EdgeGist tables are far below this. Future schema changes should avoid wide metadata tables. |
+| Rows per table | Unlimited, subject to storage | Unlimited, subject to storage | Row count is not the direct cap; storage, query duration, row reads, and single-database throughput become the practical limits. |
+| String, `BLOB`, or table row size | 2,000,000 bytes | 2,000,000 bytes | EdgeGist rejects file content larger than 2,000,000 bytes. Because D1 also caps full row size, keep individual files comfortably below 2 MB when filenames or metadata are large. |
+| SQL statement length | 100 KB | 100 KB | Generated queries and migrations must stay compact. EdgeGist chunks multi-row statements instead of generating one huge statement. |
+| Bound parameters per query | 100 | 100 | EdgeGist chunks file/version inserts and deletes to stay under this D1 cap. Requests with many files can still require many D1 statements. |
+| SQL function arguments | 32 | 32 | Avoid future features that generate large variadic SQL functions. |
+| `LIKE` / `GLOB` pattern length | 50 bytes | 50 bytes | EdgeGist search uses `LIKE '%query%'`; keep search terms short. Escaping and the surrounding `%` characters also count toward the pattern. |
+| D1 bindings per Worker script | Approximately 5,000 | Approximately 5,000 | EdgeGist uses one binding named `DB`. This is not a practical limit unless the architecture changes to many bound databases. |
+| SQL query duration | 30 seconds | 30 seconds | Full content scans, large exports, and retention cleanup must finish quickly. If they do not, split the work or reduce stored history/data size. |
+| `wrangler d1 execute` import file size | 5 GB | 5 GB | Manual migration/import files run through Wrangler must stay below 5 GB. EdgeGist release migrations are expected to be much smaller. |
+| Batch statements | Individual query limits still apply to each statement inside a batch | Same | A batch does not bypass the 100-parameter, 100 KB SQL, row-size, or query-duration limits. |
+| Per-database concurrency | One D1 database processes queries one at a time and queues excess work | Same | EdgeGist is best suited for personal or low-concurrency single-owner usage. Heavy concurrent edits, imports, exports, or content searches can queue and eventually return D1 overloaded errors. |
+
+### Practical EdgeGist limits
+
+- Keep each file below 2 MB. The app enforces `2,000,000` bytes per file content because D1 caps strings and rows at that size.
+- Keep search terms short. D1 caps `LIKE` patterns at 50 bytes, and EdgeGist wraps the search query in `%...%`.
+- Keep the retained history count intentional. Every retained version stores file snapshots in D1, so storage grows with `file size * retained versions`, plus current files and change metadata.
+- On Workers Free, treat EdgeGist as a personal deployment: 100,000 dynamic Worker requests/day, 10 ms CPU/request, 50 subrequests/request, 500 MB maximum D1 database size, 5 million rows read/day, and 100,000 rows written/day.
+- On Workers Paid, the important ceilings become cost and per-database scale: 10 million Worker requests/month included, 30 million CPU milliseconds/month included, 10 GB maximum D1 database size, 25 billion rows read/month included, and 50 million rows written/month included.
+- On D1 Free, exceeding daily read/write limits stops D1 queries until the daily reset; hitting the storage limit requires deleting data or upgrading before new writes/schema changes can continue. On D1 Paid, usage above included reads, writes, or storage is billed.
+- Static assets are not the same as dynamic app/API routes. `/static/*`, `/icons/*`, and `/screenshots/*` are served as assets, but the API and owner pages invoke the Worker and count toward Worker limits.
+- EdgeGist stores data only in D1. It does not use R2/KV for large object storage, so it is not a good fit for binary blobs, huge archives, or Git-style repository transport.
+
 ## Updating
 
 ### Git-based deployment
