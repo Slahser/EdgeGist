@@ -1,0 +1,38 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync upstream
+        run: |
+          git remote add upstream https://github.com/xream/EdgeGist.git
+          git fetch upstream
+          git checkout main
+          git pull origin main --rebase
+
+          if ! git merge upstream/main --no-edit; then
+            echo "发现冲突，保留本地 .github 配置..."
+            git checkout HEAD -- .github/ || true
+            git add .github/ || true
+            git rm -rf .github/workflows/release.yml || true
+            git commit --no-edit
+          fi
+
+          git push origin main
