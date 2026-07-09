@@ -19,16 +19,39 @@ import {
   presentLiteVersion,
   presentVersion,
 } from './presenter'
+import { gistCacheTag, purgeGistCache, purgeGistsListCache } from '../cache/purge'
 import type { ListGistsOptions } from './types'
 
-const rawFileHeaders = {
-  'content-type': 'text/plain; charset=utf-8',
-  'x-content-type-options': 'nosniff',
-  'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
-  'x-frame-options': 'deny',
-  'x-robots-tag': 'noindex, nofollow, noarchive',
-  'access-control-allow-origin': '*',
-  'cross-origin-resource-policy': 'cross-origin',
+const RAW_FILE_CACHE_MAX_AGE = 3600
+
+function rawFileHeaders(gistId: string) {
+  return {
+    'content-type': 'text/plain; charset=utf-8',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    'x-frame-options': 'deny',
+    'x-robots-tag': 'noindex, nofollow, noarchive',
+    'access-control-allow-origin': '*',
+    'cross-origin-resource-policy': 'cross-origin',
+    'cache-control': `public, max-age=${RAW_FILE_CACHE_MAX_AGE}`,
+    'Cache-Tag': gistCacheTag(gistId),
+  }
+}
+
+function scheduleCachePurge(c: AppContext, task: Promise<void>): void {
+  try {
+    c.executionCtx.waitUntil(task)
+  } catch {
+    void task
+  }
+}
+
+function scheduleGistCachePurge(c: AppContext, gistId: string): void {
+  scheduleCachePurge(c, purgeGistCache(gistId))
+}
+
+function scheduleGistsListCachePurge(c: AppContext): void {
+  scheduleCachePurge(c, purgeGistsListCache())
 }
 
 type GistRoutesOptions = {
@@ -116,6 +139,7 @@ export function registerGistRoutes(app: Hono<AppEnv>, routeOptions: GistRoutesOp
     requireOwner(c)
     const service = new GistService(getRepository(c), c.get('config'))
     const gist = await service.createFromRequest(await readJsonObject(c.req))
+    scheduleGistsListCachePurge(c)
     return c.json(
       present(gist, {
         config: c.get('config'),
@@ -158,7 +182,7 @@ export function registerGistRoutes(app: Hono<AppEnv>, routeOptions: GistRoutesOp
     const filename = requiredParam(c, 'filename')
     const file = version.files.find((candidate) => candidate.filename === filename)
     if (!file) throw notFound()
-    return c.body(file.content, 200, rawFileHeaders)
+    return c.body(file.content, 200, rawFileHeaders(gist.id))
   })
 
   app.get(route('/gists/:gistId/raw/:filename'), async (c) => {
@@ -166,7 +190,7 @@ export function registerGistRoutes(app: Hono<AppEnv>, routeOptions: GistRoutesOp
     const filename = requiredParam(c, 'filename')
     const file = gist.files.find((candidate) => candidate.filename === filename)
     if (!file) throw notFound()
-    return c.body(file.content, 200, rawFileHeaders)
+    return c.body(file.content, 200, rawFileHeaders(gist.id))
   })
 
   app.get(route('/:owner/:gistId/raw/:filename'), async (c) => {
@@ -175,7 +199,7 @@ export function registerGistRoutes(app: Hono<AppEnv>, routeOptions: GistRoutesOp
     const filename = requiredParam(c, 'filename')
     const file = gist.files.find((candidate) => candidate.filename === filename)
     if (!file) throw notFound()
-    return c.body(file.content, 200, rawFileHeaders)
+    return c.body(file.content, 200, rawFileHeaders(gist.id))
   })
 
   app.get(route('/gists/:gistId/commits'), async (c) => {
@@ -195,7 +219,7 @@ export function registerGistRoutes(app: Hono<AppEnv>, routeOptions: GistRoutesOp
     const filename = requiredParam(c, 'filename')
     const file = version.files.find((candidate) => candidate.filename === filename)
     if (!file) throw notFound()
-    return c.body(file.content, 200, rawFileHeaders)
+    return c.body(file.content, 200, rawFileHeaders(gist.id))
   })
 
   app.get(route('/gists/:gistId/star'), async (c) => {
@@ -311,6 +335,7 @@ export function registerGistRoutes(app: Hono<AppEnv>, routeOptions: GistRoutesOp
       await readJsonObject(c.req),
     )
     if (!gist) return c.body(null, 204)
+    scheduleGistCachePurge(c, gist.id)
     return c.json(
       present(gist, {
         config: c.get('config'),
@@ -324,6 +349,7 @@ export function registerGistRoutes(app: Hono<AppEnv>, routeOptions: GistRoutesOp
     requireOwner(c)
     const deleted = await getRepository(c).deleteGist(requiredParam(c, 'gistId'))
     if (!deleted) throw notFound()
+    scheduleGistCachePurge(c, requiredParam(c, 'gistId'))
     return c.body(null, 204)
   })
 }

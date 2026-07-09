@@ -1,7 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "edge-gist",
-  "compatibility_date": "2026-05-08",
+  "compatibility_date": "2026-07-08",
+  "cache": {
+    "enabled": true
+  },
   "main": "./dist/_worker.js",
   "assets": {
     "directory": "./dist",

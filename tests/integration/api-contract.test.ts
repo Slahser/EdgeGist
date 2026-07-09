@@ -1723,7 +1723,7 @@ describe('Gist API contract', () => {
     expect(response.headers.get('x-content-type-options')).toBe('nosniff')
     expect(response.headers.get('content-security-policy')).toBe("default-src 'none'; style-src 'unsafe-inline'; sandbox")
     expect(response.headers.get('x-frame-options')).toBe('deny')
-    expect(response.headers.get('cache-control')).toBeNull()
+    expect(response.headers.get('cache-control')).toBe('public, max-age=3600')
     expect(await response.text()).toBe('<script>window.evil = true</script>')
   })
 
